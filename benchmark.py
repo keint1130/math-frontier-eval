@@ -21,9 +21,12 @@ from data.eval_datasets import load_eval_problems
 from grading import grade_proofs
 from grading import verify as _verify_answer
 from llm_provider import LLM
+from openai_compat import install_gpt6_compatibility
 
 os.environ.setdefault("LOCAL_BASE_URL", "http://iris-hgx-2:30000/v1")
 app = typer.Typer(pretty_exceptions_enable=False)
+
+install_gpt6_compatibility()
 
 BASE = Path(__file__).parent
 RESULTS_DIR = BASE / "results"
