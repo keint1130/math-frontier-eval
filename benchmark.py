@@ -122,16 +122,23 @@ def load_prompt_dataset(retrievers: list[str] | None = None) -> dict:
         print(f"  Downloading prompts from {HF_PROMPTS_REPO}...")
         from datasets import get_dataset_config_names, load_dataset
 
-        subsets = get_dataset_config_names(HF_PROMPTS_REPO)
         if retrievers:
-            wanted = set(retrievers)
-            subsets = [subset for subset in subsets if subset in wanted]
+            # The caller already supplied exact Hugging Face config names.
+            # Loading them directly also preserves authentication errors;
+            # get_dataset_config_names may otherwise degrade to an empty list.
+            subsets = list(dict.fromkeys(retrievers))
+        else:
+            subsets = get_dataset_config_names(HF_PROMPTS_REPO)
         prompt_dataset = {}
         for subset in subsets:
             hf_ds = load_dataset(HF_PROMPTS_REPO, subset, split="train")
             df = hf_ds.to_pandas()
             prompt_dataset.update(
                 zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
+            )
+        if retrievers and not prompt_dataset:
+            raise RuntimeError(
+                "No retrieval prompts were loaded for: " + ", ".join(retrievers)
             )
 
     _prompt_dataset_cache[cache_key] = prompt_dataset
@@ -182,6 +189,8 @@ def build_prompts_from_dataset(
     problems: list[dict],
     n_samples: int,
     prompt_ds: dict,
+    *,
+    strict: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Look up pre-built prompts for each problem. Returns (problem_prompts, flat_prompts)."""
     problem_prompts = []
@@ -202,6 +211,10 @@ def build_prompts_from_dataset(
         for _ in range(n_samples):
             flat_prompts.append(prompt)
     if missing:
+        if strict:
+            raise RuntimeError(
+                f"{retriever_name}: {missing}/{len(problems)} prompts missing from dataset"
+            )
         print(
             f"  [WARN] {retriever_name}: {missing}/{len(problems)} prompts missing from dataset",
             file=sys.stderr,
@@ -464,7 +477,7 @@ def run(
         sys_prompts = {}  # sys_name -> (problem_prompts, flat_prompts)
         for sys_name, _ in todo:
             problem_prompts, flat_prompts = build_prompts_from_dataset(
-                sys_name, merged, n_samples, prompt_ds
+                sys_name, merged, n_samples, prompt_ds, strict=debug
             )
             sys_prompts[sys_name] = (problem_prompts, flat_prompts)
 

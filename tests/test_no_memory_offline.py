@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import benchmark
+import pytest
 
 
 def test_no_memory_does_not_load_private_prompt_dataset():
@@ -18,4 +19,16 @@ def test_retrieval_system_loads_private_prompt_dataset():
 
     assert prompts == expected
     load_prompts.assert_called_once_with(["bm25_retrieval"])
+
+
+def test_debug_style_strict_prompt_lookup_rejects_silent_baseline_fallback():
+    problem = {"problem_id": "p1", "problem": "problem", "_ds_tag": "imo_answerbench"}
+    with pytest.raises(RuntimeError, match="1/1 prompts missing"):
+        benchmark.build_prompts_from_dataset(
+            "evo_geo_solution_indexed",
+            [problem],
+            1,
+            {},
+            strict=True,
+        )
 
