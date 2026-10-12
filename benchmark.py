@@ -70,7 +70,9 @@ def resolve_eval_params(
     mt = max_tokens or eval_cfg["max_tokens"]
     cc = concurrency or eval_cfg.get("concurrency", 32)
     if debug:
-        mt = min(mt, 256)
+        # Olympiad solutions routinely exceed 256 tokens. Keep debug mode to
+        # one problem/sample, but allow a complete derivation and boxed answer.
+        mt = min(mt, 4096)
         cc = min(cc, 2)
     return ns, cc, mt
 
@@ -226,7 +228,14 @@ def generate_parallel(
     elapsed = time.monotonic() - t0
     total_in = llm.total_input_tokens - in_before
     total_out = llm.total_output_tokens - out_before
-    per_prompt_usage = [{}] * len(prompts)  # llm-provider tracks cumulative totals only
+    # llm-provider exposes cumulative usage. It can be attributed exactly for
+    # the one-prompt debug path; larger batched runs retain aggregate totals.
+    per_prompt_usage = [{} for _ in prompts]
+    if len(prompts) == 1:
+        per_prompt_usage[0] = {
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+        }
     return results, elapsed, total_in, total_out, per_prompt_usage
 
 
