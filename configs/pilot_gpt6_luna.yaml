@@ -1,0 +1,21 @@
+eval:
+  n_samples: 1
+  temperature: 1.0
+  max_tokens: 4096
+  concurrency: 2
+  cache: false
+  judge_model: openai/gpt-6-luna
+  datasets:
+    - imo_answerbench
+  problem_ids_file: imo_answerbench_pilot12.json
+  output_dir: ../results/pilot12
+
+models:
+  - model: openai/gpt-6-luna
+
+retrievers:
+  baselines:
+    - no_memory
+  frontier:
+    - evo_geo_solution_indexed
+

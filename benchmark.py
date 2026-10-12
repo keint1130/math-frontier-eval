@@ -43,8 +43,8 @@ PROOF_TEMPLATE = (
 PROOF_DATASETS = {"usamo", "imo_proofbench"}
 
 
-def load_config() -> dict:
-    with open(BASE / "config.yaml") as f:
+def load_config(path: Path | None = None) -> dict:
+    with open(path or (BASE / "config.yaml")) as f:
         return yaml.safe_load(f)
 
 
@@ -237,13 +237,20 @@ def generate_parallel(
     prompts: list[str],
     temperature: float,
     max_tokens: int,
+    *,
+    use_cache: bool = True,
 ) -> tuple[list[list[str]], float, int, int, list[dict]]:
     """Run prompts through the provided LLM and return results + token stats."""
     t0 = time.monotonic()
     in_before = llm.total_input_tokens
     out_before = llm.total_output_tokens
 
-    raw_results = llm.generate(prompts, temperature=temperature, max_tokens=max_tokens)
+    raw_results = llm.generate(
+        prompts,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        cache=use_cache,
+    )
 
     def _normalize(resp):
         if isinstance(resp, str):
@@ -405,6 +412,7 @@ def eval_system(
 
 @app.command()
 def run(
+    config_path: Path = typer.Option(None, "--config", help="Experiment YAML config"),
     memory: str = typer.Option(
         None,
         "--memory",
@@ -420,11 +428,24 @@ def run(
     concurrency: int = typer.Option(None, help="Override concurrency from config"),
     skip_existing: bool = typer.Option(True, help="Skip if result file exists"),
     max_tokens: int = typer.Option(None, help="Override max_tokens from config"),
+    problem_ids_file: Path = typer.Option(
+        None,
+        help="JSON list of problem IDs to evaluate in the listed order",
+    ),
+    output_dir: Path = typer.Option(None, help="Override results output directory"),
     debug: bool = typer.Option(False, "--debug", help="Run a tiny smoke test"),
 ):
     """Run evaluation for memory systems."""
-    config = load_config()
+    config_path = config_path.resolve() if config_path else None
+    config = load_config(config_path)
     eval_cfg = config["eval"]
+    config_base = config_path.parent if config_path else BASE
+    if problem_ids_file is None and eval_cfg.get("problem_ids_file"):
+        problem_ids_file = config_base / eval_cfg["problem_ids_file"]
+    if output_dir is None:
+        configured_output = eval_cfg.get("output_dir")
+        output_dir = config_base / configured_output if configured_output else RESULTS_DIR
+    output_dir = output_dir.resolve()
     n_samples, concurrency, max_tokens = resolve_eval_params(
         config,
         n_samples=n_samples,
@@ -453,6 +474,24 @@ def run(
     # Build dataset list
     dataset_names = [dataset] if dataset else eval_cfg.get("datasets", ["aime"])
     all_problems_by_ds, merged, total = _load_eval_problems(dataset_names)
+    if problem_ids_file:
+        with open(problem_ids_file) as f:
+            requested_ids = json.load(f)
+        if not isinstance(requested_ids, list) or not all(
+            isinstance(item, str) for item in requested_ids
+        ):
+            raise ValueError("problem_ids_file must contain a JSON list of strings")
+        problem_by_id = {_problem_id(problem): problem for problem in merged}
+        missing_ids = [problem_id for problem_id in requested_ids if problem_id not in problem_by_id]
+        if missing_ids:
+            raise ValueError(f"Unknown problem IDs: {missing_ids}")
+        merged = [problem_by_id[problem_id] for problem_id in requested_ids]
+        selected = {_problem_id(problem) for problem in merged}
+        all_problems_by_ds = {
+            name: [problem for problem in problems if _problem_id(problem) in selected]
+            for name, problems in all_problems_by_ds.items()
+        }
+        total = len(merged)
     if debug:
         trimmed_by_ds: dict[str, list[dict]] = {}
         merged = []
@@ -470,7 +509,7 @@ def run(
         # Figure out which systems still need eval
         todo = []
         for sys_name in system_names:
-            result_file = RESULTS_DIR / model_short / sys_name / f"n{n_samples}.json"
+            result_file = output_dir / model_short / sys_name / f"n{n_samples}.json"
             if skip_existing and result_file.exists():
                 with open(result_file) as f:
                     result = json.load(f)
@@ -483,44 +522,24 @@ def run(
         if not todo:
             continue
 
-        # Phase 1: Look up pre-built prompts for all systems (instant)
-        sys_prompts = {}  # sys_name -> (problem_prompts, flat_prompts)
-        for sys_name, _ in todo:
-            problem_prompts, flat_prompts = build_prompts_from_dataset(
-                sys_name, merged, n_samples, prompt_ds, strict=debug
-            )
-            sys_prompts[sys_name] = (problem_prompts, flat_prompts)
-
-        # Phase 2: Generate all prompts in one parallel batch
-        all_flat = []
-        sys_ranges = {}  # sys_name -> (start, end) index into all_flat
-        for sys_name, _ in todo:
-            if sys_name not in sys_prompts:
-                continue
-            start = len(all_flat)
-            all_flat.extend(sys_prompts[sys_name][1])
-            sys_ranges[sys_name] = (start, len(all_flat))
-
-        n_sys = len(sys_ranges)
-        print(f"\n  {len(all_flat)} prompts across {n_sys} systems")
-
         judge = eval_cfg.get("judge_model", "local/gpt-oss-20b")
-        with LLM(model=model_name, max_concurrent=concurrency) as llm:
-            results, elapsed, total_in, total_out, per_prompt_usage = generate_parallel(
-                llm,
-                all_flat,
-                eval_cfg["temperature"],
-                max_tokens,
-            )
+        use_cache = bool(eval_cfg.get("cache", True))
 
-        # Phase 3: Partition results back per system, score, and save
+        # Evaluate systems separately so token and latency accounting remains
+        # exact for task-specific versus baseline comparisons.
         for sys_name, result_file in todo:
-            if sys_name not in sys_ranges:
-                continue
-            start, end = sys_ranges[sys_name]
-            sys_results = results[start:end]
-            sys_usage = per_prompt_usage[start:end]
-            problem_prompts = sys_prompts[sys_name][0]
+            problem_prompts, flat_prompts = build_prompts_from_dataset(
+                sys_name, merged, n_samples, prompt_ds, strict=bool(problem_ids_file) or debug
+            )
+            print(f"\n  {len(flat_prompts)} prompts for {sys_name}")
+            with LLM(model=model_name, max_concurrent=concurrency) as llm:
+                sys_results, elapsed, sys_in, sys_out, sys_usage = generate_parallel(
+                    llm,
+                    flat_prompts,
+                    eval_cfg["temperature"],
+                    max_tokens,
+                    use_cache=use_cache,
+                )
 
             details, mean_score, pass_score = score_responses(
                 merged,
@@ -532,9 +551,6 @@ def run(
                 concurrency,
             )
 
-            # Per-system token counts
-            sys_in = sum(u.get("input_tokens", 0) for u in sys_usage)
-            sys_out = sum(u.get("output_tokens", 0) for u in sys_usage)
             tok_rate = sys_out / max(elapsed, 0.1)
 
             print(f"\n{'=' * 60}")
@@ -558,6 +574,10 @@ def run(
                         "prompt_dataset": HF_PROMPTS_REPO,
                         "datasets": list(all_problems_by_ds.keys()),
                         "n_problems": len(merged),
+                        "problem_ids": [_problem_id(problem) for problem in merged],
+                        "temperature": eval_cfg["temperature"],
+                        "max_tokens": max_tokens,
+                        "cache": use_cache,
                         "details": details,
                     },
                     f,
@@ -567,8 +587,8 @@ def run(
     # Print summary table with per-dataset breakdown
     rows = []  # (sys_name, model, mean, pass, {ds: mean})
     all_ds = set()
-    for result_file in sorted(RESULTS_DIR.glob(f"**/n{n_samples}.json")):
-        parts = result_file.relative_to(RESULTS_DIR).parts
+    for result_file in sorted(output_dir.glob(f"**/n{n_samples}.json")):
+        parts = result_file.relative_to(output_dir).parts
         if len(parts) != 3:
             continue
         with open(result_file) as f:
