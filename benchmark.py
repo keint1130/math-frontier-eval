@@ -125,6 +125,13 @@ def load_prompt_dataset() -> dict:
     return _prompt_dataset_cache
 
 
+def load_prompt_dataset_for_systems(system_names: list[str]) -> dict:
+    """Load retrieval prompts only when a requested system needs them."""
+    if set(system_names) == {"no_memory"}:
+        return {}
+    return load_prompt_dataset()
+
+
 def _problem_id(p: dict) -> str:
     return p.get("problem_id") or hashlib.sha256(p["problem"].encode()).hexdigest()[:12]
 
@@ -170,7 +177,7 @@ def build_prompts_from_dataset(
         retriever_prompt = prompt_ds.get((retriever_name, pid))
         ds_tag = p.get("_ds_tag", "")
         if retriever_name == "no_memory" or retriever_prompt is None:
-            if retriever_prompt is None:
+            if retriever_name != "no_memory" and retriever_prompt is None:
                 missing += 1
             context = ""
         else:
@@ -393,7 +400,10 @@ def run(
         models = models[:1]
 
     system_names = resolve_systems(memory, config, debug=debug)
-    prompt_ds = load_prompt_dataset()
+    # The no-memory baseline uses only the benchmark's official problem
+    # template. Avoid requiring access to the private pre-computed retrieval
+    # prompts when it is the only requested system.
+    prompt_ds = load_prompt_dataset_for_systems(system_names)
 
     # Build dataset list
     dataset_names = [dataset] if dataset else eval_cfg.get("datasets", ["aime"])
