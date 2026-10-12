@@ -93,48 +93,58 @@ def resolve_systems(
     return names
 
 
-_prompt_dataset_cache: dict | None = None
+_prompt_dataset_cache: dict[tuple[str, ...] | None, dict] = {}
 
 
-def load_prompt_dataset() -> dict:
+def load_prompt_dataset(retrievers: list[str] | None = None) -> dict:
     """Load pre-built prompt dataset. Returns {(retriever, problem_id): prompt}.
 
     Tries local cache first (full parquet), then loads per-retriever subsets from HuggingFace.
     """
-    global _prompt_dataset_cache
-    if _prompt_dataset_cache is not None:
-        return _prompt_dataset_cache
+    cache_key = tuple(sorted(set(retrievers))) if retrievers else None
+    if cache_key in _prompt_dataset_cache:
+        return _prompt_dataset_cache[cache_key]
 
     import pandas as pd
 
     if LOCAL_PROMPTS_CACHE.exists():
         print(f"  Loading prompts from local cache: {LOCAL_PROMPTS_CACHE}")
         df = pd.read_parquet(LOCAL_PROMPTS_CACHE)
-        _prompt_dataset_cache = dict(
+        prompt_dataset = dict(
             zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
         )
+        if retrievers:
+            wanted = set(retrievers)
+            prompt_dataset = {
+                key: value for key, value in prompt_dataset.items() if key[0] in wanted
+            }
     else:
         print(f"  Downloading prompts from {HF_PROMPTS_REPO}...")
         from datasets import get_dataset_config_names, load_dataset
 
         subsets = get_dataset_config_names(HF_PROMPTS_REPO)
-        _prompt_dataset_cache = {}
+        if retrievers:
+            wanted = set(retrievers)
+            subsets = [subset for subset in subsets if subset in wanted]
+        prompt_dataset = {}
         for subset in subsets:
             hf_ds = load_dataset(HF_PROMPTS_REPO, subset, split="train")
             df = hf_ds.to_pandas()
-            _prompt_dataset_cache.update(
+            prompt_dataset.update(
                 zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
             )
 
-    print(f"  Loaded {len(_prompt_dataset_cache)} (retriever, problem) prompts.")
-    return _prompt_dataset_cache
+    _prompt_dataset_cache[cache_key] = prompt_dataset
+    print(f"  Loaded {len(prompt_dataset)} (retriever, problem) prompts.")
+    return prompt_dataset
 
 
 def load_prompt_dataset_for_systems(system_names: list[str]) -> dict:
     """Load retrieval prompts only when a requested system needs them."""
     if set(system_names) == {"no_memory"}:
         return {}
-    return load_prompt_dataset()
+    requested = [name for name in system_names if name != "no_memory"]
+    return load_prompt_dataset(requested)
 
 
 def _problem_id(p: dict) -> str:

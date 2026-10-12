@@ -17,5 +17,5 @@ def test_retrieval_system_loads_private_prompt_dataset():
         prompts = benchmark.load_prompt_dataset_for_systems(["bm25_retrieval"])
 
     assert prompts == expected
-    load_prompts.assert_called_once_with()
+    load_prompts.assert_called_once_with(["bm25_retrieval"])
 
