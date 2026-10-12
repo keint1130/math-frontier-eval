@@ -122,20 +122,30 @@ def load_prompt_dataset(retrievers: list[str] | None = None) -> dict:
         print(f"  Downloading prompts from {HF_PROMPTS_REPO}...")
         from datasets import get_dataset_config_names, load_dataset
 
-        if retrievers:
-            # The caller already supplied exact Hugging Face config names.
-            # Loading them directly also preserves authentication errors;
-            # get_dataset_config_names may otherwise degrade to an empty list.
-            subsets = list(dict.fromkeys(retrievers))
-        else:
-            subsets = get_dataset_config_names(HF_PROMPTS_REPO)
         prompt_dataset = {}
-        for subset in subsets:
-            hf_ds = load_dataset(HF_PROMPTS_REPO, subset, split="train")
+        configs = get_dataset_config_names(HF_PROMPTS_REPO)
+        # The published repository currently stores every retriever in rows of
+        # one `default` config. Retain support for an older multi-config layout.
+        if configs == ["default"] or not configs:
+            hf_ds = load_dataset(HF_PROMPTS_REPO, split="train")
             df = hf_ds.to_pandas()
+            if retrievers:
+                df = df[df["retriever"].isin(set(retrievers))]
             prompt_dataset.update(
                 zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
             )
+        else:
+            subsets = (
+                [name for name in dict.fromkeys(retrievers) if name in configs]
+                if retrievers
+                else configs
+            )
+            for subset in subsets:
+                hf_ds = load_dataset(HF_PROMPTS_REPO, subset, split="train")
+                df = hf_ds.to_pandas()
+                prompt_dataset.update(
+                    zip(zip(df["retriever"], df["problem_id"]), df["prompt"])
+                )
         if retrievers and not prompt_dataset:
             raise RuntimeError(
                 "No retrieval prompts were loaded for: " + ", ".join(retrievers)
