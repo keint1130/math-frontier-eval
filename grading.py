@@ -148,6 +148,7 @@ def normalize(string: str) -> str:
         ("^{\\circ}", ""),
         ("^\\circ", ""),
         ("\\$", ""),
+        ("$", ""),
     ]:
         string = string.replace(old, new)
     string = _remove_right_units(string)
@@ -382,9 +383,25 @@ def is_correct(gold: str, pred: str) -> bool:
     """Check equivalence via cascade: string -> math-verify -> sympy -> numeric."""
     if not isinstance(gold, str) or not isinstance(pred, str):
         return False
-    for check in [_string_check, _math_verify_check, _sympy_check, _numeric_check]:
-        if check(gold, pred) is True:
-            return True
+    gold_candidates = [gold]
+    pred_candidates = [pred]
+    # Short-answer models often box a labelled equality (for example
+    # ``YZ=7/2``) while the benchmark stores only ``7/2``. Compare the RHS as
+    # an additional candidate without discarding equation-valued answers.
+    if gold.count("=") == 1:
+        gold_candidates.append(gold.split("=", 1)[1])
+    if pred.count("=") == 1:
+        pred_candidates.append(pred.split("=", 1)[1])
+    for gold_candidate in gold_candidates:
+        for pred_candidate in pred_candidates:
+            candidate_pairs = [
+                (gold_candidate, pred_candidate),
+                (normalize(gold_candidate), normalize(pred_candidate)),
+            ]
+            for gold_value, pred_value in candidate_pairs:
+                for check in [_string_check, _math_verify_check, _sympy_check, _numeric_check]:
+                    if check(gold_value, pred_value) is True:
+                        return True
     return False
 
 
