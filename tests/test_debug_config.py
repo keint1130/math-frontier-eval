@@ -28,3 +28,23 @@ def test_single_prompt_usage_is_attributed_to_result():
     assert (total_in, total_out) == (104, 256)
     assert usage == [{"input_tokens": 104, "output_tokens": 256}]
 
+
+def test_reasoning_effort_omits_temperature():
+    llm = Mock()
+    llm.total_input_tokens = 0
+    llm.total_output_tokens = 0
+    llm.generate.return_value = ["answer"]
+
+    generate_parallel(
+        llm,
+        ["problem"],
+        None,
+        4096,
+        use_cache=False,
+        reasoning_effort="medium",
+    )
+
+    kwargs = llm.generate.call_args.kwargs
+    assert kwargs["reasoning_effort"] == "medium"
+    assert "temperature" not in kwargs
+

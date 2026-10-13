@@ -235,22 +235,23 @@ def build_prompts_from_dataset(
 def generate_parallel(
     llm: LLM,
     prompts: list[str],
-    temperature: float,
+    temperature: float | None,
     max_tokens: int,
     *,
     use_cache: bool = True,
+    reasoning_effort: str | None = None,
 ) -> tuple[list[list[str]], float, int, int, list[dict]]:
     """Run prompts through the provided LLM and return results + token stats."""
     t0 = time.monotonic()
     in_before = llm.total_input_tokens
     out_before = llm.total_output_tokens
 
-    raw_results = llm.generate(
-        prompts,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        cache=use_cache,
-    )
+    generation_kwargs = {"max_tokens": max_tokens, "cache": use_cache}
+    if temperature is not None:
+        generation_kwargs["temperature"] = temperature
+    if reasoning_effort is not None:
+        generation_kwargs["reasoning_effort"] = reasoning_effort
+    raw_results = llm.generate(prompts, **generation_kwargs)
 
     def _normalize(resp):
         if isinstance(resp, str):
@@ -536,9 +537,10 @@ def run(
                 sys_results, elapsed, sys_in, sys_out, sys_usage = generate_parallel(
                     llm,
                     flat_prompts,
-                    eval_cfg["temperature"],
+                    eval_cfg.get("temperature"),
                     max_tokens,
                     use_cache=use_cache,
+                    reasoning_effort=eval_cfg.get("reasoning_effort"),
                 )
 
             details, mean_score, pass_score = score_responses(
@@ -575,7 +577,8 @@ def run(
                         "datasets": list(all_problems_by_ds.keys()),
                         "n_problems": len(merged),
                         "problem_ids": [_problem_id(problem) for problem in merged],
-                        "temperature": eval_cfg["temperature"],
+                        "temperature": eval_cfg.get("temperature"),
+                        "reasoning_effort": eval_cfg.get("reasoning_effort"),
                         "max_tokens": max_tokens,
                         "cache": use_cache,
                         "details": details,

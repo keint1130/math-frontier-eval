@@ -1,6 +1,6 @@
 eval:
   n_samples: 1
-  temperature: 1.0
+  reasoning_effort: medium
   max_tokens: 4096
   concurrency: 2
   cache: false
